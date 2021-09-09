@@ -185,6 +185,7 @@ const long timeoutTime = 20000;
 const int pinRGB[3] = {13, 12, 14};
 // Setting PWM bit resolution
 const int resolution = 256;
+const int buttons[2] = {4, 5};
 
 // timeout after which the leds should be turned off
 int remainingTime = -1;
@@ -239,8 +240,8 @@ void updateLedValues() {
   static int lastUpdate = millis();
 
   int now = millis();
-  if ((now - lastUpdate) > 200) {
     int diff_t = now - lastUpdate;
+  if (diff_t > 10) {
     lastUpdate = now;
 
     if (remainingTime > 0) {
@@ -250,7 +251,7 @@ void updateLedValues() {
 
     for (int i = 0 ; i < 3 ; ++i) {
       int dRGB = targetRGB[i] - currentRGB[i];
-      const int diff = 3;
+      const int diff = 20;
       if (dRGB >= diff || dRGB <= -diff)
         dRGB /= diff;
       else if (dRGB >= 1)
@@ -262,6 +263,40 @@ void updateLedValues() {
         currentRGB[i] += dRGB;
         analogWrite(pinRGB[i], currentRGB[i]);
       }
+    }
+  }
+}
+
+
+void handleButtons() {
+  static int btnPressed[2] = {0, 0};
+  static int previousTime = 0;
+  int currentTime = millis();
+  if(currentTime <= previousTime + 20) return;
+  previousTime = currentTime;
+  
+  for(int i = 0 ; i < 2; ++i){
+    const int t0 = 33;
+    if(digitalRead(buttons[i])){
+      if(++btnPressed[i] > t0) {
+        int updateValue = btnPressed[i] - t0;
+        if(updateValue >= 512)
+          btnPressed[i] = t0;
+        if(updateValue >= 256) {
+          targetRGB[0] = targetRGB[1] = targetRGB[2] = 512 - updateValue;
+        } else {
+          targetRGB[0] = targetRGB[1] = targetRGB[2] = updateValue;
+        }
+      }
+    } else if (btnPressed[i] < t0) {
+      if(btnPressed[i] > 10) {
+        targetRGB[0] = 0;
+        targetRGB[1] = 0;
+        targetRGB[2] = 0;
+      }
+      btnPressed[i] = 0;
+    } else {
+      btnPressed[i] = 0;
     }
   }
 }
@@ -641,6 +676,8 @@ void HandlePost(WiFiClient& client, const String & header)
 
 void loop() {
   static unsigned long previousTime = 0;
+  
+  handleButtons();
   updateLedValues();
 
   WiFiClient client = server.available();   // Listen for incoming clients
