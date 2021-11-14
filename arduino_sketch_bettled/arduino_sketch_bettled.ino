@@ -1,174 +1,13 @@
 
 // Load Wi-Fi library
 #include <ESP8266WiFi.h>
-#include <EEPROM.h>
+#include "eeprom.hpp"
+decltype(EEPROM_DATA_Manager::modes) EEPROM_DATA_Manager::modes{0xAA55CC33, 0xE1D2C3B4};
 
+#include "color_space_conversions.hpp"
+#include "page.h"
 #include <array>
 
-// this should be part of the compiler
-#define static_assert(x) namespace{extern char error[(x)?0:-1];}
-
-struct EEPROM_DATA {
-  uint32_t crc{0};
-  uint32_t mode{0};
-  std::array<char, 0x40> configPassword;
-  std::array<char, 0x40> ssid;
-  std::array<char, 0x40> password;
-  std::array<char, 0x40> hostname;
-};
-
-class EEPROM_DATA_Manager {
-  private:
-    EEPROM_DATA data;
-    static const std::array<uint32_t, 2> modes;
-
-    template <typename ArrayType>
-    static void AssignString(ArrayType& data, const String& text) {
-      if (text.length() >= data.size())
-        return;
-
-      int i = 0;
-      for (; i < text.length(); ++i) {
-        data[i] = text.charAt(i);
-      }
-      for (; i < data.size(); ++i) {
-        data[i] = '\0';
-      }
-    }
-
-    static inline uint32_t AddByteToCRC(uint32_t crc, char character) {
-      // the algorithm/implementation from
-      //  'Hacker's Delight 2nd Edition by Henry S Warren, Jr.'
-      //  is used to compute the crc 32.
-      crc = crc ^ character;
-      for (int j = 7; j >= 0; --j) {
-        uint32_t mask = -(crc & 1);
-        crc = (crc >> 1) ^ (0xEDB88320UL & mask);
-      }
-      return crc;
-    }
-
-    template <typename ArrayType>
-    static uint32_t AddToCRC(uint32_t crc, const ArrayType& data) {
-      for (const char character : data) {
-        crc = AddByteToCRC(crc, character);
-      }
-      return crc;
-    }
-
-    uint32_t computeCRC() const {
-      uint32_t crc = 0xFFffFFff;
-      crc = AddToCRC(crc, data.configPassword);
-      crc = AddToCRC(crc, data.ssid);
-      crc = AddToCRC(crc, data.password);
-      crc = AddToCRC(crc, data.hostname);
-      crc = AddByteToCRC(crc, data.mode);
-      return crc ^ 0xFFffFFff;
-    }
-
-    void resetDataToDefault() {
-      data.crc = 0;
-      data.mode = modes[MODE_BASE_STATION];
-      for (auto & item : data.configPassword) item = '\0';
-      for (auto & item : data.ssid) item = '\0';
-      for (auto & item : data.password) item = '\0';
-      for (auto & item : data.hostname) item = '\0';
-      data.configPassword = std::array<char, 0x40> {'!', 'n', 'i', 't', 'P', 'w', 'd', '1', '2', '3', 0};
-      data.ssid = std::array<char, 0x40> {'E', 's', 'p', '1', '2', '_', 'L', 'E', 'D', 0};
-      data.password = std::array<char, 0x40> {'1', '2', '3', '4', '5', '6', '7', '8', 0};
-    }
-  public:
-    enum EMODES {
-      MODE_BASE_STATION = 0,
-      MODE_NODE = MODE_BASE_STATION + 1,
-
-      MODE_COUNT = modes.size()
-    };
-    EEPROM_DATA_Manager() {}
-
-    void initialize() {
-      EEPROM.begin(4096);
-      EEPROM.get(0, data);
-      uint32_t actualCRC = computeCRC();
-      if (actualCRC != data.crc) {
-        // data is invalid clear all
-        resetDataToDefault();
-      }
-    }
-
-    void resetToBaseMode() {
-      resetDataToDefault();
-      EEPROM.put(0, data);
-      EEPROM.commit();
-    }
-
-    bool isValid() const {
-      return data.crc == computeCRC();
-    }
-
-    EMODES getMode() const {
-      for (int mode = 0; mode < MODE_COUNT; ++mode) {
-        if (data.mode == modes[mode]) {
-          return EMODES(mode);
-        }
-      }
-      return MODE_BASE_STATION;
-    }
-
-    const String getHostname() const {
-      return String(data.hostname.data());
-    }
-
-    const String getSSID() const {
-      return String(data.ssid.data());
-    }
-
-    const String getPassword() const {
-      return String(data.password.data());
-    }
-
-    bool setNewConfig(const String & oldPassword,
-                      const String & newPassword,
-                      const String & ssid,
-                      const String & password,
-                      const String & hostname,
-                      EMODES mode) {
-      Serial.println("Assigning");
-      Serial.println(oldPassword);
-      Serial.println(newPassword);
-      Serial.println(ssid);
-      Serial.println(password);
-      Serial.println(hostname);
-      Serial.println(mode);
-      // check the string length
-      if (newPassword.length() >= data.configPassword.size()
-          || ssid.length() >= data.ssid.size() || ssid.length() < 1
-          || password.length() >= data.password.size() || password.length() < 8
-          || hostname.length() >= data.hostname.size()
-          || mode >= MODE_COUNT) {
-            Serial.println("Faild validation.");
-        return false;
-      }
-
-      for (size_t i = 0; i < data.configPassword.size(); ++i) {
-        if (oldPassword[i] != data.configPassword[i])
-          return false;
-      }
-
-      AssignString(data.configPassword, newPassword);
-      AssignString(data.ssid, ssid);
-      AssignString(data.password, password);
-      AssignString(data.hostname, hostname);
-      data.mode = modes[mode];
-      data.crc = computeCRC();
-
-      Serial.println("Assigned.");
-      EEPROM.put(0, data);
-      return EEPROM.commit();
-    }
-};
-decltype(EEPROM_DATA_Manager::modes) EEPROM_DATA_Manager::modes{0xAA55CC33, 0xE1D2C3B4};
-static_assert(sizeof(EEPROM_DATA) < 4096);
 
 EEPROM_DATA_Manager configuration;
 
@@ -178,29 +17,32 @@ WiFiServer server(80);
 // Define timeout time in milliseconds (example: 2000ms = 2s)
 const long timeoutTime = 20000;
 
-// Red, green, and blue pins for PWM control
-// Red is on GPIO 13
+// Red, green, blue and white pins for PWM control
+// Red is on GPIO 16
 // Green is on GPIO 12
 // Blue is on GPIO 14
-const int pinRGB[3] = {13, 12, 14};
+// white is on GPIO 13
+const std::array<int,4>pinsRGBW{16, 12, 14, 13};
+using ColorSpace = RGBW_t;
 // Setting PWM bit resolution
 const int resolution = 256;
-const int buttons[2] = {4, 5};
+const std::array<int,0> buttons;
 
 // timeout after which the leds should be turned off
 int remainingTime = -1;
 // color to set once the remaining time has run to <0
-int targetRGB [3] = {0, 0, 0};
+ColorSpace targetRGB {0,0,0,128};
 
 void setup() {
   Serial.begin(115200);
 
+  pinMode(0, INPUT);
   // configure LED PWM resolution/range and set pins to LOW
   analogWriteRange(resolution);
-  analogWrite(pinRGB[0], 0);
-  analogWrite(pinRGB[1], 0);
-  analogWrite(pinRGB[2], 0);
-
+  for(const auto & pin : pinsRGBW){
+    analogWrite(pin, 0);  
+  }
+  
   configuration.initialize();
 
   wifi_station_set_hostname(configuration.getHostname().c_str());
@@ -220,15 +62,26 @@ void setup() {
         Serial.println(configuration.getSSID());
         wifi_station_set_auto_connect(true);
         WiFi.begin(configuration.getSSID(), configuration.getPassword());
+        int counter = 0;
+        for (uint i = 0 ; i < targetRGB.size() ; ++i) {
+            analogWrite(pinsRGBW[i], targetRGB[i]);
+        }
         while (WiFi.status() != WL_CONNECTED) {
           delay(500);
           Serial.print(".");
+          if(++counter > 8 && !digitalRead(0)) {
+            configuration.resetToBaseMode();
+            delay(1000);
+            ESP.restart();
+          }
         }
         // Print local IP address and start web server
         Serial.println("");
         Serial.println("WiFi connected.");
         Serial.println("IP address: ");
         Serial.println(WiFi.localIP());
+        Serial.println("hostname: ");
+        Serial.println(configuration.getHostname().c_str());
       } break;
   }
 
@@ -236,7 +89,7 @@ void setup() {
 }
 
 void updateLedValues() {
-  static int currentRGB [3] = {0, 0, 0};
+  static auto currentRGB = targetRGB;
   static int lastUpdate = millis();
 
   int now = millis();
@@ -249,7 +102,7 @@ void updateLedValues() {
       if (remainingTime > 0) return;
     }
 
-    for (int i = 0 ; i < 3 ; ++i) {
+    for (uint i = 0 ; i < targetRGB.size() ; ++i) {
       int dRGB = targetRGB[i] - currentRGB[i];
       const int diff = 20;
       if (dRGB >= diff || dRGB <= -diff)
@@ -261,7 +114,7 @@ void updateLedValues() {
 
       if (dRGB != 0) {
         currentRGB[i] += dRGB;
-        analogWrite(pinRGB[i], currentRGB[i]);
+        analogWrite(pinsRGBW[i], currentRGB[i]);
       }
     }
   }
@@ -275,24 +128,30 @@ void handleButtons() {
   if(currentTime <= previousTime + 20) return;
   previousTime = currentTime;
   
-  for(int i = 0 ; i < 2; ++i){
-    const int t0 = 33;
+  for(uint i = 0 ; i < buttons.size(); ++i){
+    const int t0 = 35;
     if(digitalRead(buttons[i])){
       if(++btnPressed[i] > t0) {
         int updateValue = btnPressed[i] - t0;
+        remainingTime  = -1;
         if(updateValue >= 512)
           btnPressed[i] = t0;
         if(updateValue >= 256) {
-          targetRGB[0] = targetRGB[1] = targetRGB[2] = 512 - updateValue;
+          for(auto & value : targetRGB)
+            value = 512 - updateValue;
+        } else if (updateValue >= 80) {
+          for(auto & value : targetRGB)
+            value = updateValue;
         } else {
-          targetRGB[0] = targetRGB[1] = targetRGB[2] = updateValue;
+          for(auto & value : targetRGB)
+            value = 0;
+          targetRGB[0] = updateValue;
         }
       }
     } else if (btnPressed[i] < t0) {
-      if(btnPressed[i] > 10) {
-        targetRGB[0] = 0;
-        targetRGB[1] = 0;
-        targetRGB[2] = 0;
+      if(btnPressed[i] > 7) {
+        for(auto & value : targetRGB)
+            value = 0;
       }
       btnPressed[i] = 0;
     } else {
@@ -301,186 +160,18 @@ void handleButtons() {
   }
 }
 
-const String websitePartA = "<!DOCTYPE html>\n"
-                            "<html>\n"
-                            "<head>\n"
-                            "<meta charset='UTF-8'/>\n"
-                            "<meta http-equiv='content-type' content='text/html'/>\n"
-                            "<meta name='viewport' content='width=device-width, initial-scale=1.0'/>\n"
-                            "<style>\n"
-                            "body { background-color: #222;color: #CCC;font-family: 'Kristen ITC', Comic Sans, sans-serif }\n"
-                            "button { border-radius: 12px;background-color: #cf3;border: none;color: black;padding: 10px;text-align: center;text-decoration: none;display: inline-block;font-size: 12px;margin: 4px 2px;cursor: pointer; }\n"
-                            "button.predefined_color_button { border-radius: 50%; height: 40px; width:40px; margin: 5px; }\n"
-                            "range { background-color: #00000000; }\n"
-                            "</style>\n"
-                            "<title>Nestbeleuchtung</title>\n"
-                            "<script type='text/javascript'>\n"
-                            "var red = 0;var green = 0;var blue = 0;\n"
-                            "function UpdateColorDisplay(r, g, b, overrideColor) {\n"
-                            "  var hexString = ((r << 16) + (g << 8) + b).toString(16);\n"
-                            "  var extendedHexString = '000000' + hexString.toUpperCase();\n"
-                            "  var colorCode = '#' + (extendedHexString).slice(-6);\n"
-                            "  var div = document.getElementById('divpreview');\n"
-                            "  if(overrideColor === undefined) { div.style.backgroundColor = colorCode; }\n"
-                            "  else { div.style.backgroundColor = overrideColor; }\n"
-                            "  div.innerHTML = colorCode;\n"
-                            "  if((r + g + b) < 128) { div.style.color = '#FFC'; }\n"
-                            "  else { div.style.color = '#000'; }\n"
-                            "  document.getElementById('Slider_Rot').value = r;\n"
-                            "  document.getElementById('Slider_Gras').value = g;\n"
-                            "  document.getElementById('Slider_Blau').value = b;\n"
-                            "}\n"
-                            "function ReadColor() {\n"
-                            "  var xmlHttp = new XMLHttpRequest();\n"
-                            "  xmlHttp.onreadystatechange = function() {\n"
-                            "    if (xmlHttp.readyState == 4 && xmlHttp.status == 200) {\n"
-                            "        var entries = xmlHttp.responseText.split('\\n');\n"
-                            "        red = Number(entries[0]);\n"
-                            "        green = Number(entries[1]);\n"
-                            "        blue = Number(entries[2]);\n"
-                            "        UpdateColorDisplay(red, green, blue);\n"
-                            "    }\n"
-                            "  }\n"
-                            "  xmlHttp.open('GET', 'http://";
-const String websitePartB = "/Data.plain', true);\n"
-                            "  xmlHttp.send(null);\n"
-                            "}\n"
-                            "function clickColor(r, g, b, time, overrideColor) {\n"
-                            "  red = r;\n"
-                            "  green = g;\n"
-                            "  blue = b;\n"
-                            "  var request = new XMLHttpRequest();\n"
-                            "  request.open('POST', 'http://";
-const String websitePartC = "', true);\n"
-                            "  request.send('r' + red + 'g' + green + 'b' + blue + 't' + time);\n"
-                            "  UpdateColorDisplay(red, green, blue, overrideColor);\n"
-                            "}\n"
-                            "ReadColor();\n"
-                            "</script>\n"
-                            "</head>\n"
-                            "<body>\n"
-                            "<div>\n"
-                            "<h1><u>Bett Beleuchtung</u></h1>\n"
-                            "<p><u><font color='#f00'>F</font><font color='#f60'>a</font><font color='#fd0'>r</font><font color='#bf0'>b</font><font color='#4f0'>e</font><font color='#0f2'>i</font><font color='#0f9'>n</font><font color='#0ff'>s</font><font color='#09f'>t</font><font color='#02f'>e</font><font color='#40f'>l</font><font color='#b0f'>l</font><font color='#f0d'>u</font><font color='#f06'>n</font><font color='#f00'>g</font></u>:</p>\n"
-                            "<div>\n"
-                            "<button class='predefined_color_button' style='background-color: #FFFFEF' onclick='clickColor(0xFF, 0xff, 0x98, 0, getComputedStyle(this)[\"background-color\"])'/>\n"
-                            "<button class='predefined_color_button' style='background-color: #D88700' onclick='clickColor(0xA2, 0x2A, 0x00, 0, getComputedStyle(this)[\"background-color\"])'/>\n"
-                            "<button class='predefined_color_button' style='background-color: #FF6800' onclick='clickColor(0xFF, 0x28, 0x00, 0, getComputedStyle(this)[\"background-color\"])'/>\n"
-                            "</div>\n"
-                            "<div>\n"
-                            "<button class='predefined_color_button' style='background-color: #F6FD00' onclick='clickColor(0xA4, 0x51, 0x00, 0, getComputedStyle(this)[\"background-color\"])'/>\n"
-                            "<button class='predefined_color_button' style='background-color: #600000' onclick='clickColor(0x09, 0x00, 0x00, 0, getComputedStyle(this)[\"background-color\"])'/>\n"
-                            "<button class='predefined_color_button' style='background-color: #A1008A' onclick='clickColor(0xA1, 0x00, 0x8A, 0, getComputedStyle(this)[\"background-color\"])'/>\n"
-                            "</div>\n"
-                            "<div>\n"
-                            "<button class='predefined_color_button' style='background-color: #009900' onclick='clickColor(0x00, 0x6c, 0x00, 0, getComputedStyle(this)[\"background-color\"])'/>\n"
-                            "<button class='predefined_color_button' style='background-color: #00B39C' onclick='clickColor(0x00, 0x6C, 0x36, 0, getComputedStyle(this)[\"background-color\"])'/>\n"
-                            "<button class='predefined_color_button' style='background-color: #A1004C' onclick='clickColor(0xA1, 0x00, 0x1F, 0, getComputedStyle(this)[\"background-color\"])'/>\n"
-                            "</div>\n"
-                            "<div style='width:236px;'>\n"
-                            "<div id='divpreview' style='background-color: rgb(0,0,0); text-align: center;color: #000;font-family: mono;'>&nbsp;</div>\n"
-                            "</div>\n"
-                            "<div style='margin:10px'>\n"
-                            "<u>Timer</u>:<br/>\n"
-                            "<button onclick='clickColor(0,0,0,0)'>sofort</button>\n"
-                            "<button onclick='clickColor(0,0,0,15*60*1000)'>in 15 min.</button>\n"
-                            "<button onclick='clickColor(0,0,0,30*60*1000)'>in 30 min.</button>\n"
-                            "</div>\n"
-                            "<div style='margin:10px'>\n"
-                            "<u>Regler</u>:<br/>\n"
-                            "<table>\n"
-                            "<tr><td>Rot:</td><td><input type='range' min='0' max='255' value='0' class='slider' id='Slider_Rot'></td></tr>\n"
-                            "<tr><td>Gr&uuml;n:</td><td><input type='range' min='0' max='255' value='0' class='slider' id='Slider_Gras'> </td></tr>\n"
-                            "<tr><td>Blau:</td><td><input type='range' min='0' max='255' value='0' class='slider' id='Slider_Blau'> </td></tr>\n"
-                            "</table>\n"
-                            "</div>\n"
-                            "<script type='text/javascript'>\n"
-                            "var Rot = document.getElementById('Slider_Rot');\n"
-                            "Rot.oninput = function() { clickColor (parseInt(this.value), green, blue, 0); }\n"
-                            "var Gras = document.getElementById('Slider_Gras');\n"
-                            "Gras.oninput = function() { clickColor (red, parseInt(this.value), blue, 0); }\n"
-                            "var Blau = document.getElementById('Slider_Blau');\n"
-                            "Blau.oninput = function() { clickColor (red, green, parseInt(this.value), 0); }\n"
-                            "</script>\n"
-                            "</div>\n"
-                            "</body>\n"
-                            "</html>\n";
+template<typename ColorSpace>
+void PrintTargetColor(const ColorSpace & target){
+  Serial.print("The Target Color is: ");
+  Serial.print(String(target[0]));
+  Serial.print(", ");
+  Serial.print(String(target[1]));
+  Serial.print(", ");
+  Serial.print(String(target[2]));
+  Serial.print(", ");
+  Serial.println(String(target[3]));
 
-const String configsitePartA = "<!DOCTYPE html>\n"
-                               "<html>\n"
-                               "<head>\n"
-                               "<meta charset='UTF-8'/>\n"
-                               "<meta http-equiv='content-type' content='text/html'/>\n"
-                               "<meta name='viewport' content='width=device-width, initial-scale=1.0'/>\n"
-                               "<style>\n"
-                               "body { background-color: #222;color: #CCC;font-family: 'Kristen ITC', Comic Sans, sans-serif; }\n"
-                               "input, select { background-color: #111;color: #CCC;font-family: 'Kristen ITC', Comic Sans, sans-serif; margin: 4px 2px; border: none; min-width: 250px;}\n"
-                               "button { border-radius: 12px;background-color: #cf3;border: none;color: black;padding: 10px;text-align: center;text-decoration: none;display: inline-block;font-size: 12px;margin: 4px 2px;cursor: pointer; }\n"
-                               "</style>\n"
-                               "<title>Nestbeleuchtung</title>\n"
-                               "<script type='text/javascript'>\n"
-                               "function SendData() {\n"
-                               "  var postData = '';\n"
-                               "  var auth_key = document.getElementById('auth_key').value;\n"
-                               "  var new_auth_key = document.getElementById('new_auth_key').value;\n"
-                               "  postData += ';auth_key:' + auth_key;\n"
-                               "  if(new_auth_key == '') {\n"
-                               "    postData += ';new_auth_key:' + auth_key;\n"
-                               "  } else {\n"
-                               "    postData += ';new_auth_key:' + new_auth_key;\n"
-                               "  }\n"
-                               "  postData += ';mode:' + document.getElementById('mode').value;\n"
-                               "  postData += ';wlan_ssid:' + document.getElementById('wlan_ssid').value;\n"
-                               "  postData += ';wlan_pwd:' + document.getElementById('wlan_password').value;\n"
-                               "  postData += ';hostname:' + document.getElementById('hostname').value;\n"
-                               "  var xmlHttp = new XMLHttpRequest();\n"
-                               "  xmlHttp.onreadystatechange = function() {\n"
-                               "    if (xmlHttp.readyState == 4) {\n"
-                               "      if(xmlHttp.status == 200) {\n"
-                               "        document.getElementById('result_div').innerHTML = 'Values Set.';\n"
-                               "      } else {\n"
-                               "        document.getElementById('result_div').innerHTML = 'Failed to set Values.<br/>Reported error code is: ' + xmlHttp.status;\n"
-                               "      }\n"
-                               "    }\n"
-                               "  }\n"
-                               "  xmlHttp.open('POST', 'http://";
-const String configsitePartB = "/config.plain', true);\n"
-                               "  xmlHttp.send(postData);\n"
-                               "}\n"
-                               "</script>\n"
-                               "</head>\n"
-                               "<body>\n"
-                               "<h2>Configuration</h2>\n"
-                               "<dl>\n"
-                               "<dt><label for='auth_key'>Auth-Key</label></dt>\n"
-                               "<dd><input type='text' id='auth_key' pattern='[^;:]{8,100}' value=''/></dd>\n"
-                               "<dt><label for='new_auth_key'>New Auth-Key</label></dt>\n"
-                               "<dd><input type='text' id='new_auth_key' pattern='[^;:]{8,100}' value=''/></dd>\n"
-                               "<dt><label for='mode'>Mode</label></dt>\n"
-                               "<dd>\n"
-                               "<select id='mode'>\n"
-                               "<option value='0' ";
-const String configsitePartC = ">Accesspoint</option>\n"
-                               "<option value='1' ";
-const String configsitePartD = ">Join WiFi</option>\n"
-                               "</select>\n"
-                               "</dd>\n"
-                               "<dt><label for='wlan_ssid'>WLAN-SSID</label></dt>\n"
-                               "<dd><input type='text' id='wlan_ssid' pattern='[^;:]{1,32}' value='";
-const String configsitePartE = "'/></dd>\n"
-                               "<dt><label for='wlan_password'>WLAN-Password</label></dt>\n"
-                               "<dd><input type='text' id='wlan_password' pattern='[^;:]{8,63}' value=''/></dd>\n"
-                               "<dt><label for='hostname'>Hostname</label></dt>\n"
-                               "<dd><input type='text' id='hostname' pattern='[^;:]{1,253}' value='";
-const String configsitePartF = "'/></dd>\n"
-                               "</dl>\n"
-                               "<button onclick='SendData()' style='min-width: 150px'>Submit</button>\n"
-                               "<div id='result_div'>\n"
-                               "&nbsp;\n"
-                               "</div>\n"
-                               "</body>\n"
-                               "</html>\n";
-
+}
 
 void HandleGet(WiFiClient& client, const String & header)
 {
@@ -563,21 +254,26 @@ void HandleGet(WiFiClient& client, const String & header)
       client.print(configsitePartF);
       client.println();
     } break;
-    case Values:
-      client.println(String(targetRGB[0]));
-      client.println(String(targetRGB[1]));
-      client.println(String(targetRGB[2]));
+    case Values:{
+      const auto color = convert<ColorSpace, RGB_t>(targetRGB);
+      client.println(String(color[0]));
+      client.println(String(color[1]));
+      client.println(String(color[2]));
       client.println(String(remainingTime));
-      break;
-    case RedValue:
-      client.println(String(targetRGB[0]));
-      break;
-    case GreenValue:
-      client.println(String(targetRGB[1]));
-      break;
-    case BlueValue:
-      client.println(String(targetRGB[2]));
-      break;
+      PrintTargetColor<RGBW_t>(targetRGB);
+    } break;
+    case RedValue:{
+      const auto color = convert<ColorSpace, RGB_t>(targetRGB);
+      client.println(String(color[0]));
+    } break;
+    case GreenValue:{
+      const auto color = convert<ColorSpace, RGB_t>(targetRGB);
+      client.println(String(color[1]));
+    } break;
+    case BlueValue:{
+      const auto color = convert<ColorSpace, RGB_t>(targetRGB);
+      client.println(String(color[2]));
+    } break;
     case TimeValue:
       client.println(String(remainingTime));
       break;
@@ -635,14 +331,17 @@ void HandlePost(WiFiClient& client, const String & header)
   {
     case LEDs:
       {
+        auto color = convert<ColorSpace, RGB_t>(targetRGB);
         int index = content.indexOf('r');
-        if (index >= 0) targetRGB[0] = content.substring(index + 1).toInt();
+        if (index >= 0) color[0] = content.substring(index + 1).toInt();
         index = content.indexOf('g');
-        if (index >= 0) targetRGB[1] = content.substring(index + 1).toInt();
+        if (index >= 0) color[1] = content.substring(index + 1).toInt();
         index = content.indexOf('b');
-        if (index >= 0) targetRGB[2] = content.substring(index + 1).toInt();
+        if (index >= 0) color[2] = content.substring(index + 1).toInt();
         index = content.indexOf('t');
         if (index >= 0) remainingTime = content.substring(index + 1).toInt();
+        targetRGB = convert<RGB_t, ColorSpace>(color);
+        PrintTargetColor<RGBW_t>(targetRGB);  
 
         client.println("HTTP/1.1 200 OK");
         client.println("Access-Control-Allow-Origin: *");
