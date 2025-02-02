@@ -1,12 +1,15 @@
 
 // Load Wi-Fi library
 #include <ESP8266WiFi.h>
+#include <array>
+
+#include "color_space_conversions.hpp"
+using ColorSpace = RGBW_t;
+
 #include "eeprom.hpp"
 decltype(EEPROM_DATA_Manager::modes) EEPROM_DATA_Manager::modes{0xAA55CC33, 0xE1D2C3B4};
 
-#include "color_space_conversions.hpp"
 #include "page.h"
-#include <array>
 
 
 EEPROM_DATA_Manager configuration;
@@ -17,35 +20,32 @@ WiFiServer server(80);
 // Define timeout time in milliseconds (example: 2000ms = 2s)
 const long timeoutTime = 20000;
 
-// Red, green, blue and white pins for PWM control
-// Red is on GPIO 16
-// Green is on GPIO 12
-// Blue is on GPIO 14
-// white is on GPIO 13
-const std::array<int,4>pinsRGBW{16, 12, 14, 13};
-using ColorSpace = RGBW_t;
+const std::array<int,4>pinsRGBW{14/*R*/, 12/*G*/, 16/*B*/, 13/*W*/};
 // Setting PWM bit resolution
-const int resolution = 256;
+const int PwmPeriod = 1024;
 const std::array<int,0> buttons;
 
 // timeout after which the leds should be turned off
 int remainingTime = -1;
 // color to set once the remaining time has run to <0
-ColorSpace targetRGB {0,0,0,128};
+ColorSpace targetRGB {0,0,0,0};
 
 void setup() {
   Serial.begin(115200);
+  Serial.println("Booting...");
 
   pinMode(0, INPUT);
   // configure LED PWM resolution/range and set pins to LOW
-  analogWriteRange(resolution);
+  analogWriteRange(PwmPeriod);
   for(const auto & pin : pinsRGBW){
     analogWrite(pin, 0);  
   }
   
   configuration.initialize();
+  targetRGB = configuration.getInitialColor();
 
   wifi_station_set_hostname(configuration.getHostname().c_str());
+  Serial.println("");
   switch (configuration.getMode()) {
     default:
     case EEPROM_DATA_Manager::EMODES::MODE_BASE_STATION:
@@ -91,9 +91,10 @@ void setup() {
 void updateLedValues() {
   static auto currentRGB = targetRGB;
   static int lastUpdate = millis();
+  static int lastTargetSet = millis();
 
   int now = millis();
-    int diff_t = now - lastUpdate;
+  int diff_t = now - lastUpdate;
   if (diff_t > 10) {
     lastUpdate = now;
 
@@ -115,7 +116,14 @@ void updateLedValues() {
       if (dRGB != 0) {
         currentRGB[i] += dRGB;
         analogWrite(pinsRGBW[i], currentRGB[i]);
+        Serial.print(i);
+        Serial.print(" ");
+        Serial.println(currentRGB[i]);
+        lastTargetSet = now;
       }
+    }
+    if (targetRGB == currentRGB && now - lastTargetSet > 5000 && targetRGB != configuration.getInitialColor()) {
+      configuration.updateInitialColor(targetRGB);
     }
   }
 }
@@ -125,7 +133,7 @@ void handleButtons() {
   static int btnPressed[2] = {0, 0};
   static int previousTime = 0;
   int currentTime = millis();
-  if(currentTime <= previousTime + 20) return;
+  if(currentTime <= previousTime + 10) return;
   previousTime = currentTime;
   
   for(uint i = 0 ; i < buttons.size(); ++i){
@@ -134,12 +142,12 @@ void handleButtons() {
       if(++btnPressed[i] > t0) {
         int updateValue = btnPressed[i] - t0;
         remainingTime  = -1;
-        if(updateValue >= 512)
+        if(updateValue >= (PwmPeriod * 2))
           btnPressed[i] = t0;
-        if(updateValue >= 256) {
+        if(updateValue >= PwmPeriod) {
           for(auto & value : targetRGB)
-            value = 512 - updateValue;
-        } else if (updateValue >= 80) {
+            value = (PwmPeriod * 2) - updateValue;
+        } else if (updateValue >= (PwmPeriod / 2)) {
           for(auto & value : targetRGB)
             value = updateValue;
         } else {
@@ -175,6 +183,7 @@ void PrintTargetColor(const ColorSpace & target){
 
 void HandleGet(WiFiClient& client, const String & header)
 {
+  Serial.println("Get:");
   enum {Page, Config, Values, RedValue, GreenValue, BlueValue, TimeValue};
   int contentID = -1;
   String contentType = "text";
@@ -256,23 +265,23 @@ void HandleGet(WiFiClient& client, const String & header)
     } break;
     case Values:{
       const auto color = convert<ColorSpace, RGB_t>(targetRGB);
-      client.println(String(color[0]));
-      client.println(String(color[1]));
-      client.println(String(color[2]));
+      client.println(String(color[0]*256/PwmPeriod));
+      client.println(String(color[1]*256/PwmPeriod));
+      client.println(String(color[2]*256/PwmPeriod));
       client.println(String(remainingTime));
       PrintTargetColor<RGBW_t>(targetRGB);
     } break;
     case RedValue:{
       const auto color = convert<ColorSpace, RGB_t>(targetRGB);
-      client.println(String(color[0]));
+      client.println(String(color[0]*256/PwmPeriod));
     } break;
     case GreenValue:{
       const auto color = convert<ColorSpace, RGB_t>(targetRGB);
-      client.println(String(color[1]));
+      client.println(String(color[1]*256/PwmPeriod));
     } break;
     case BlueValue:{
       const auto color = convert<ColorSpace, RGB_t>(targetRGB);
-      client.println(String(color[2]));
+      client.println(String(color[2]*256/PwmPeriod));
     } break;
     case TimeValue:
       client.println(String(remainingTime));
@@ -297,6 +306,7 @@ String ParseValue(const String & sourceString, const String& key) {
 
 void HandlePost(WiFiClient& client, const String & header)
 {
+  Serial.println("Post:");
   enum {LEDs, Config};
   int contentID = -1;
   String contentType = "text/plain";
@@ -341,8 +351,12 @@ void HandlePost(WiFiClient& client, const String & header)
         index = content.indexOf('t');
         if (index >= 0) remainingTime = content.substring(index + 1).toInt();
         targetRGB = convert<RGB_t, ColorSpace>(color);
-        PrintTargetColor<RGBW_t>(targetRGB);  
-
+        for(auto& value : targetRGB)
+        {
+          value = value * PwmPeriod / 256;
+        }
+        PrintTargetColor<RGBW_t>(targetRGB);
+        
         client.println("HTTP/1.1 200 OK");
         client.println("Access-Control-Allow-Origin: *");
         client.println("Connection: close");
@@ -375,12 +389,21 @@ void HandlePost(WiFiClient& client, const String & header)
 
 void loop() {
   static unsigned long previousTime = 0;
+  static std::array<char, 6> buffer{0};
+  static int buffer_offset{0};
+  int c = Serial.read();
+  if(c > 0 && c < 'z')
+  {
+    buffer[buffer_offset % buffer.size()] = c;
+    if(buffer == decltype(buffer){'R','e','s','e','t','!'}) configuration.resetToBaseMode();
+    if(c ==10  || c ==13) buffer_offset = 0;
+  }
   
   handleButtons();
   updateLedValues();
 
   WiFiClient client = server.available();   // Listen for incoming clients
-
+  
   if (client) {                             // If a new client connects,
     unsigned long currentTime = millis();
     previousTime = currentTime;
